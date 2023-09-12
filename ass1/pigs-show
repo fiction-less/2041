@@ -1,0 +1,48 @@
+#!/bin/dash
+branch=$(cat ./.pig/HEAD.txt)
+NOcommits=-1
+
+# error and usage checking
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif test "$#" -ge 2 || echo "$@" | grep -Ev ".*:.*"; then
+    echo "usage: pigs-show <commit>:<filename>"
+    exit 1
+fi
+
+commitNum=$(echo "$1" | cut -d" " -f2 | cut -d":" -f1)
+commitFile=$(echo "$1" | cut -d" " -f2 | cut -d":" -f2)
+
+if test "$1" = ":"; then
+    echo "pigs-show: error: invalid filename ''"
+    exit 1
+
+elif ! test -d ./.pig/"$branch"/commits/"$commitNum" ; then
+
+    # if commit number is out of range or not a number
+    echo "pigs-show: error: unknown commit '$commitNum'"
+    exit 1
+
+elif test "$commitNum" = ""; then
+
+    # if there is no commit number, print the last staged version
+    if test -f ./.pig/index/"$commitFile"; then
+        cat ./.pig/index/"$commitFile"
+    else
+        echo "pigs-show: error: '$commitFile' not found in index"
+        exit 1
+    fi
+
+
+elif ! test -f ./.pig/"$branch"/commits/"$commitNum"/"$commitFile"; then
+
+    # file doesnt exist in the provided commitnum dir
+    echo "pigs-show: error: '$commitFile' not found in commit $commitNum"
+    exit 1
+
+else
+    # commit number given has file
+    cat ./.pig/"$branch"/commits/"$commitNum"/"$commitFile"
+fi
+

@@ -1,0 +1,73 @@
+#!/bin/dash
+
+# usage and error checking
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif test "$#" = 0; then
+    echo "usage: pigs-add <filenames>"
+    exit 1
+fi
+
+branch=$(cat ./.pig/HEAD.txt)
+prevComms=./.pig/"$branch"/prevCommits.txt
+
+for file in "$@"; do
+
+
+    if ! test -f "$file" && ! grep -E "^$file" "$prevComms" >/dev/null; then
+        # check if file exists + has never been added/commited before
+        echo pigs-add: error: can not open "'$file'"
+        exit 1
+    fi
+
+    # note: deleted txt is doc that stores files that have been commited before,
+    # but are deleted, It is needed to remove said file when commiting
+
+    if echo "$file" | grep -E "^[a-zA-Z0-9][a-zA-Z0-9_.,.\-]*" >/dev/null; then
+
+        # if its a valid file add file to index dir
+        if ! test -f "$file" &&
+             test -f ./.pig/index/"$file" &&
+             grep -E "^$file" "$prevComms" >/dev/null &&
+           ! grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null
+        then
+
+            # if the file has been deleted and it not already staged for deletion
+            # delete it in index ( not stages in this case means its still exists in index)
+            echo "$file" >> ./.pig/deletedIndex.txt
+            rm ./.pig/index/"$file"
+
+        elif    test -f "$file" &&
+              ! test -f ./.pig/index/"$file" &&
+                grep -E "^$file" "$prevComms" >/dev/null &&
+                grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null
+        then
+
+            # its its been cached deleted but you add it again, then
+            # restore the index and remove the file from deletedIndex.txt
+
+            cp "$file"  ./.pig/index/"$file"
+
+            # removing said file fromd deleted txt
+            if  grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null; then
+                temp=$(mktemp)
+                sed -E "/^$file/d" ./.pig/deletedIndex.txt > "$temp"
+                cat "$temp" > ./.pig/deletedIndex.txt
+                rm "$temp"
+            fi
+
+        elif ! grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null; then
+
+            # regular git-add on a non deleted file
+            cp "$file"  ./.pig/index/"$file"
+
+            #add the filename to a the prevCommit txt if not already there.
+            if  ! grep -E "^$file" "$prevComms" >/dev/null; then
+                echo "$file -1" >> "$prevComms"
+            fi
+        fi
+    fi
+
+done

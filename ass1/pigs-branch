@@ -1,0 +1,100 @@
+#!/bin/dash
+
+
+currbranch=$(cat ./.pig/HEAD.txt)
+allCommits=./.pig/"$currbranch"/commitLog.txt
+
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif ! test -s "$allCommits"; then
+    echo pigs-branch: error: this command can not be run until after the first commit
+    exit 1
+fi
+
+#---------------- BRANCH FUNCTIONS AND ERROR CHECKING
+
+if test "$#" = 0; then
+    # list all branches
+    while read -r line; do
+        echo "$line"
+    done < ./.pig/branches.txt | sort
+elif test "$#" -ge 2 && ! test "$1" = "-d" && ! test "$2" = "-d"; then
+    echo  "$#" "$2"
+    echo "usage: pigs-branch [-d] <branch>"
+    exit 1
+elif ! test "$(echo "$1" |  grep -E "^-")" ; then
+
+    # if no options added then create branch
+    branchName="$1"
+
+    if test -d ./.pig/"$branchName"; then
+        # check if branch exists already or not
+        echo "pigs-branch: error: branch '$branchName' already exists"
+        exit 1
+    fi
+    mkdir ./.pig/"$branchName"
+    for item in ./.pig/"$currbranch"/*; do
+        cp -R "$item" ./.pig/"$branchName"
+    done
+
+    #------------- prep for pigs-checkout ----------
+
+    # add to branch text
+    echo "$branchName" >> ./.pig/branches.txt
+    # create snapshot of status for pigs checkout
+    pigs-status > ./.pig/"$branchName"/snapShot.txt
+    # create a snapshot of index for checkout and one for reverting
+
+    for file in ./.pig/index/*; do
+        if ! test "$file" = "./.pig/index/*"; then
+            cat "$file" > ./.pig/"$branchName"/index/"$(basename "$file")"
+            cat "$file" > ./.pig/"$branchName"/revertBranch/"$(basename "$file")"
+        fi
+    done
+
+    # blacking listing commits once a file has commited
+
+    echo "commitNum-$(($(cat ./.pig/commitNum.txt) - 1)) commited?-no"> ./.pig/"$branchName"/blackListed/"$currbranch"
+    echo "commitNum-$(($(cat ./.pig/commitNum.txt) - 1)) commited?-no"> ./.pig/"$currbranch"/blackListed/"$branchName"
+
+    # keep track of branches that have not been committed yet.
+    echo "$branchName" > ./.pig/"$currbranch"/uncommitedSharedBranches.txt
+    echo "$currbranch" > ./.pig/"$branchName"/uncommitedSharedBranches.txt
+
+    ## might beed to track by commit number, if theres a commit, get that
+    # commit number, and get the snapshot closest to it.
+    pigs-status > ./.pig/"$branchName"/revertedSnapshot
+    pigs-status > ./.pig/"$currbranch"/revertedSnapshot
+
+
+
+elif test "$(echo "$1" |  grep -E "^-d")" && test "$#" -gt 1; then
+    # delete branch if -d option present
+    for branchName in "$@"; do
+        if ! test "$branchName" = "-d"; then
+            if test "$branchName" = "master" ; then
+                # cant delete master
+                echo "pigs-branch: error: can not delete branch 'master': default branch"
+                continue
+            elif
+                ! test -d ./.pig/"$branchName"; then
+                # if branch doesnt exist
+                echo "pigs-branch: error: branch '$branchName' doesn't exist"
+                continue
+            fi
+
+            # cant remove branch you are currently in
+            rm -r ./.pig/"$branchName" &&
+            echo "Deleted branch '$branchName'"
+
+            # remove branch from branch text
+            temp=$(mktemp)
+            sed -E "/^$branchName$/d" ./.pig/branches.txt > "$temp"
+            cat "$temp" > ./.pig/branches.txt
+            rm "$temp"
+        fi
+    done
+fi
+

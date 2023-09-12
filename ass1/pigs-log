@@ -1,0 +1,5 @@
+#!/bin/dash
+
+branch=$(cat ./.pig/HEAD.txt)
+#prints the log out in reverse
+tac ./.pig/"$branch"/commitMsgLog.txt

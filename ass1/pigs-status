@@ -1,0 +1,211 @@
+#!/bin/dash
+
+branch=$(cat ./.pig/HEAD.txt)
+prevCommits=./.pig/"$branch"/prevCommits.txt
+globalCommit=$(($(cat ./.pig/commitNum.txt) - 1))
+commitLog=./.pig/"$branch"/commitLog.txt
+
+# usage and error checking
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif test "$#" -ge 1; then
+    echo usage: pigs-status
+    exit 1
+fi
+
+# get all untracked files that have not been a part of the repo at any point
+
+untrackedFile=$(mktemp)
+for file in *
+do
+    if
+        ! test -f ./.pig/index/"$file" &&
+        ! grep -E "$file" "$commitLog" >/dev/null &&
+        ! grep -E "$file" "$prevCommits" >/dev/null &&
+        ! echo "$file" | grep -E "^pigs-" >/dev/null &&
+        ! echo "$file" | grep -E "^test.*.sh$" >/dev/null &&
+        ! echo "$file" | grep -E "^[\*]" >/dev/null;
+    then
+        echo "$file" >> "$untrackedFile"
+    fi
+done
+
+# get the file that is deleted from prevCommits ( i.e. commited but removed and
+# the deleted file is than added )
+
+trackedButDeleted=$(mktemp)
+while read -r line; do
+    if ! cat "$prevCommits" | grep -E "^$line" >/dev/null; then
+        echo "$line" filler>> "$trackedButDeleted"
+    fi
+done < "$commitLog"
+
+# gets files from other prev Commits of shared branches
+# if you havent been commited yet
+
+
+tempListOfFiles=$(mktemp)
+cat ./.pig/"$branch"/prevCommits.txt > "$tempListOfFiles"
+cat "$trackedButDeleted" >> "$tempListOfFiles"
+
+
+
+while true; do
+    while read line; do
+
+        file=$(echo "$line" | cut -d" " -f1)
+        indexFile=./.pig/index/"$file"
+        last_commit_num=$(
+                        cat ./.pig/"$branch"/prevCommits.txt |
+                        grep -E "^$file" | rev | cut -d" " -f1 | rev
+                        )
+        last_Commit_file=./.pig/"$branch"/commits/"$last_commit_num"/"$file"
+
+
+        if
+            ! test -f "$file" &&
+            ! test -f "$indexFile" && (
+            ! grep -E "$file" "$prevCommits" >/dev/null || test "$last_commit_num" = -1
+            ) &&
+            ! test -f ./.pig/"$branch"/"$globalCommit"/"$file"
+
+        then
+            # if removed from index and working dir then we ignore it
+            # this can happen if a deleted file IS commited yet wchi means it gets removed from prev
+            # bascially not in commits, index or file, not in latest commit file
+            continue
+
+        elif
+             ! test -f "$file" &&
+             ! test -f "$indexFile" &&
+               grep -E "^$file" "$commitLog" >/dev/null &&
+               grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null
+        then
+            # if its been commited before, but index + file r deleted, BUT, the
+            # deletion HASNT BEEN COMITED YET
+            echo "$file" - file deleted, deleted from index; continue
+
+        elif  test -f "$file" &&
+            ! test -f "$indexFile" &&
+              grep -E "$file" "$prevCommits" >/dev/null &&
+              test -f ./.pig/"$branch"/commits/"$globalCommit"/"$file"
+        then
+            # file in index is deleted but its been commited b4, you can still see it in commits.
+            # file must exist
+            echo "$file" -  deleted from index; continue
+
+        elif ! test -f "$indexFile" &&
+               test -f "$file" &&
+              ! test -f ./.pig/"$branch"/commits/"$globalCommit"/"$file"
+
+        then
+             # commited before, but its no longer in the index and the latest commits
+
+            echo "$file" - untracked; continue
+        else
+
+            if  test -f "$file" && test -f "$indexFile"; then
+                DIFF_file_index="$(diff "$file" "$indexFile")"; fi
+
+            if ! test "$last_commit_num" -le -1; then
+                 DIFF_index_commit="$(diff "$indexFile" "$last_Commit_file")"; fi
+
+            # ------------ DELETED FILES  -----
+            if
+                ! test -f "$file" &&
+                  test -f "$indexFile" &&
+                  test "$DIFF_index_commit" = "" &&
+                ! test "$last_commit_num" -le -1
+            then
+                # file is staged and commited, but the work file is deleted
+                echo "$file" -  file deleted; continue
+
+            # ------------ NON COMMITED FILES  -----
+
+            elif
+                test "$last_commit_num" -le -1
+            then
+
+                if
+                    ! test -f "$file" &&
+                      test -f "$indexFile"
+                then
+                    # if file has been staged, but then og file was deleted b4 being ever commited
+                    echo "$file" - added to index, file deleted; continue
+
+                elif
+                    test -f "$file" &&
+                    test -f "$indexFile" &&
+                    test "$DIFF_file_index" = ""
+                then
+                    # if file has been added but never commited ( index and file should be same)
+                    echo "$file" - added to index; continue
+
+                elif
+                      test -f "$file" &&
+                      test -f "$indexFile" &&
+                    ! test "$DIFF_file_index" = ""
+                then
+                    # if its been added to index and og file was changed, (not commited)
+                    echo "$file" - added to index, file changed; continue
+                fi
+
+            # ------------ CHANGED FILES FILES  -----
+            elif
+                  test "$DIFF_file_index" = "" &&
+                ! test "$DIFF_index_commit" = "";
+            then
+                # file changed, changes staged for commit ( already commited before)
+                echo "$file" - file changed, changes staged for commit; continue
+
+
+            elif
+                ! test "$DIFF_file_index" = "" &&
+                  test -f "$file" &&
+                  test "$DIFF_index_commit" = ""
+            then
+                # file changed, changes not staged for commit, file exists!
+                echo "$file" - file changed, changes not staged for commit; continue
+
+            elif
+                ! test "$DIFF_file_index" = "" &&
+                ! test "$DIFF_index_commit" = ""
+            then
+                 # file diff from index diff from commit
+                echo "$file" - file changed, different changes staged for commit; continue
+
+
+            elif
+                  test "$DIFF_file_index" = "" &&
+                ! test "$DIFF_index_commit" = ""
+            then
+                # file is added to index (same) but commit diff
+                echo "$file" - changes not staged for commit; continue
+
+            elif
+                test "$DIFF_file_index" = "" &&
+                test "$DIFF_index_commit" = ""
+            then
+                # same as repo: file is the same as the commited file + added file
+                echo "$file" - same as repo
+            fi
+
+        fi
+
+    done < "$tempListOfFiles"
+
+    while read line; do
+        echo "$line" -  untracked
+    done  < "$untrackedFile"
+
+    break
+
+done | sort | uniq
+
+# remove temp files
+
+rm "$untrackedFile"
+rm "$trackedButDeleted"
+rm "$tempListOfFiles"

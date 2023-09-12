@@ -1,0 +1,180 @@
+#!/bin/dash
+branch=$(cat ./.pig/HEAD.txt)
+NOcommits=-1
+
+# error and usage checking
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif test "$#" = 0; then
+    echo "usage: pigs-rm [--force] [--cached] <filenames>"
+    exit 1
+elif  (test "$1" = "--force" && test "$2" = "--cached") ||
+      (test "$2" = "--force" && test "$1" = "--cached"); then
+    if  test "$#" -lt 3; then
+        echo "usage: pigs-rm [--force] [--cached] <filenames>"
+    fi
+elif  (test "$1" = "--force" && ! test "$2" = "--cached") ||
+      (! test "$2" = "--force" && test "$1" = "--cached"); then
+    if  test "$#" -lt 2; then
+        echo "usage: pigs-rm [--force] [--cached] <filenames>"
+    fi
+elif test "$#" = 1 && (test "$1" = "--force" || test "$1" = "--cached"); then
+    echo "usage: pigs-rm [--force] [--cached] <filenames>"
+fi
+
+
+
+# checks if the file is in the repo
+
+checkFiles () {
+    for file in "$@"; do
+        if  echo "$file" | grep -Ev "^--" > /dev/null &&
+            ! test -f ./.pig/index/$file;
+        then
+            echo "pigs-rm: error: '$file' is not in the pigs repository"
+            exit 1 #c
+        fi
+    done
+
+}
+
+# checks if index is different to both the working file and last commit
+regularCheck () {
+    for file in "$@"; do
+        if  echo "$file" | grep -Ev "^--" > /dev/null; then
+        commitNum=$( cat ./.pig/"$branch"/prevCommits.txt | grep -E "$file" |
+                    rev | cut -d" " -f1 | rev)
+        fi
+
+        if  echo "$file" | grep -Ev "^--" > /dev/null &&
+            test -f ./.pig/$branch/commits/$commitNum/$file &&
+            test -f ./.pig/index/$file
+        then
+            commitedFile=./.pig/$branch/commits/$commitNum/$file
+            stagedFile=./.pig/index/$file
+
+            if ! test "$(diff "$stagedFile" $file)" = "" &&
+               ! test "$(diff $stagedFile $commitedFile)" = ""
+            then
+                echo "pigs-rm: error: '$file' in index is different to both the working file and the repository"
+                exit 1
+            fi
+        fi
+    done
+}
+
+# for no arg options checks if working file is different to staged and commited
+# file but staged and commited are same
+safetyCheckAll () {
+
+    # no commit file yet
+    if  echo "$file" | grep -Ev "^--" > /dev/null; then
+
+       for file in "$@"; do
+        commitNum=$( cat ./.pig/"$branch"/prevCommits.txt | grep -E "$file" |
+                    rev | cut -d" " -f1 | rev)
+        if ! test -f ./.pig/$branch/commits/$commitNum/$file &&
+            test -f ./.pig/index/$file
+        then
+            echo "pigs-rm: error: '$file' has staged changes in the index"
+            exit 1
+        fi
+
+
+        if  test -f ./.pig/$branch/commits/$commitNum/$file &&
+            test -f ./.pig/index/$file
+        then
+            commitedFile=./.pig/$branch/commits/$commitNum/$file
+            stagedFile=./.pig/index/$file
+
+            if  ! test "$(diff $file $stagedFile)" = "" &&
+                ! test "$(diff $file $commitedFile)" = "" &&
+                test "$(diff $stagedFile $commitedFile)" = ""
+            then
+                echo "pigs-rm: error: '$file' in the repository is different to the working file"
+                exit 1
+
+            # if last commit and index have different content
+            elif ! test "$(diff "$stagedFile" "$commitedFile")" = "" &&
+                   test "$(diff $file $stagedFile)" = ""
+            then
+                echo "pigs-rm: error: '$file' has staged changes in the index"
+                exit 1
+            fi
+        fi
+        done
+    fi
+}
+
+
+# remove arg files in your current dir
+removeFiles () {
+    for file in "$@"; do
+        if  echo "$file" | grep -Ev "^--" > /dev/null; then
+            if test -f "$file"; then
+                rm "$file"
+            fi
+        fi
+    done
+}
+
+# removes arg files in index
+removeIndex () {
+    for file in "$@"; do
+        if  echo "$file" | grep -Ev "^--" > /dev/null; then
+            if test -f ./.pig/index/"$file"; then
+                rm ./.pig/index/"$file"
+            fi
+
+        fi
+    done
+}
+
+# add index to deleted text
+addDeletedIndex () {
+    for file in "$@"; do
+        if  echo "$file" | grep -Ev "^--" > /dev/null; then
+            # if not already added, add to delete list
+            if ! grep -E "^$file" ./.pig/deletedIndex.txt >/dev/null; then
+                echo "$file" >> ./.pig/deletedIndex.txt
+            fi
+        fi
+    done
+}
+
+
+if ! test "$1" = "--cached" && ! test "$1" = "--force"; then
+    # if non are added, file is removed from index and curr dir
+    # check that files in dir are the same as those in the staging index
+    checkFiles "$@"
+    regularCheck "$@"
+    safetyCheckAll "$@"
+
+    removeFiles "$@"
+    removeIndex "$@"
+    addDeletedIndex "$@"
+
+elif test "$1" = "--cached" && ! test "$2" = "--force"; then
+    # if [--cached] is added , the file is removed only from the index,
+    checkFiles "$@"
+    regularCheck "$@"
+    removeIndex "$@"
+    addDeletedIndex "$@"
+
+elif test "$1" = "--force" && ! test "$2" = "--cached"; then
+    # if [--forced] only, forcefully removes from index and file
+    checkFiles "$@"
+    removeFiles "$@"
+    removeIndex "$@"
+    addDeletedIndex "$@"
+
+elif (test "$1" = "--force" && test "$2" = "--cached") ||
+     (test "$2" = "--force" && test "$1" = "--cached"); then
+    # for [--forced][--cached], forcefully removes from index
+    checkFiles "$@"
+    removeIndex "$@"
+    addDeletedIndex "$@"
+fi
+

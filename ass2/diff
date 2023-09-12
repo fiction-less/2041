@@ -1,0 +1,4 @@
+12c12
+< print("all of the single letter Python files are:  " + " ".join(sorted(glob.glob("?.py"))))
+---
+> print("all of the single letter Python files are: " + " ".join(sorted(glob.glob("?.py"))))

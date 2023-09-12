@@ -1,0 +1,226 @@
+#!/bin/dash
+
+
+noCOMMITS=-1
+commitSuccess=false
+commitNum=$(cat ./.pig/commitNum.txt)
+branch=$(cat ./.pig/HEAD.txt)
+
+# create the commit folder for the newest commit
+
+mkdir ./.pig/"$branch"/commits/"$commitNum"
+
+# usage and error checking
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif test "$2" = "" || echo "$@" | grep -Ev "\-m |\-am " >/dev/null; then
+    echo "usage: pigs-commit [-a] -m commit-message"
+    rm -r ./.pig/"$branch"/commits/"$commitNum"
+    exit 1
+fi
+
+################################################################################
+#                              COMMIT -a OPTION
+################################################################################
+
+# if there is an -a option, stage all changed files into index that have
+# already been added, new files should not be added
+
+if echo "$@" | grep -E "\-a |\-am |\-ma " > /dev/null # CHECK for -a
+then
+    for file in *; do
+
+        if  test "$file" = "./.pig/index/*"; then
+            # ignore if directory is empty
+            continue;
+        fi
+
+        # check if the file has been commited before ( use prevCommits )
+        # if so, check if its been change + if so, stage it to index.
+
+        checkCommited=$(cat ./.pig/"$branch"/prevCommits.txt | grep -E "^$file")
+        if ! test "$checkCommited" = ""; then
+
+            # we dont want to restage a massive file, so check theres already an
+            # identical staged file  and add it if its different
+
+            if ! test "$(diff "$file" ./.pig/index/"$file")" = ""; then
+                pigs-add "$file"
+            fi
+        fi
+    done
+
+    # if files have been deleted, seek them out and add them to the deleted txt file
+
+    while read -r line; do
+        file=$(echo "$line" | cut -d" " -f1)
+        if ! test -f "$file"; then
+            pigs-add "$file"
+        fi
+    done < ./.pig/"$branch"/prevCommits.txt
+
+fi
+
+################################################################################
+#                              REGULAR COMMIT
+################################################################################
+
+# copies all files in the index over to its respective commit folder documented
+# in ./.pig/commitNum.txt
+
+for file in "./.pig/index"/*
+do
+
+    if  test "$file" = "./.pig/index/*"; then
+
+        # ignore if directory is empty
+
+        continue;
+    fi
+
+    # only commit if there are changes including:
+    #    if file does not yet exist yet using prevCommits.txt
+    #    last Commit and curr Commit are different
+
+    lastCommitNum=$( cat ./.pig/"$branch"/prevCommits.txt | grep -E "$(basename "$file")" |
+                    rev | cut -d" " -f1 | rev)
+
+
+    if ! test "$lastCommitNum" = "$noCOMMITS"; then
+        lastCommitFile="./.pig/$branch/commits/$lastCommitNum/$(basename $file)"
+    fi
+
+    # check if index is recorded. if the file doest exist in prevcommits, then
+    # the index belongs to a file from another branch
+
+    if test "$lastCommitNum" = ""; then
+        continue; fi
+
+    # copy files in index over to its commit folder.
+    # look in the last commited file and check if the commits are different
+
+    cat "$file" > ./.pig/"$branch"/commits/"$commitNum"/"$(basename "$file")"
+    if    test "$lastCommitNum" = "$noCOMMITS" ||
+        ! test "$(diff "$file" "$lastCommitFile")" = "" ; then
+
+        commitSuccess=true
+
+        # add to log if not already there
+
+        echo $(basename "$file") >> ./.pig/"$branch"/commitLog.txt | uniq
+
+        # update the lastCommit number of the commited file
+
+        temp=$(mktemp)
+        commitedLine=$(grep -E "^$(basename "$file")" ./.pig/"$branch"/prevCommits.txt)
+        echo "$(sed -E "s/($commitedLine)/\1 "$commitNum"/g" ./.pig/"$branch"/prevCommits.txt)" > "$temp" &&
+        cat  "$temp" > ./.pig/"$branch"/prevCommits.txt &&
+        rm "$temp"
+    fi
+
+done &&
+
+
+################################################################################
+#                            DELETED COMMIT
+################################################################################
+
+# if a file has been deleted from index, it needs to be commited
+# we mark it as deleted by adding -2
+
+if test -s ./.pig/deletedIndex.txt
+then
+    commitSuccess=true
+    while read line
+    do
+        # if a file is deleted, also delete the file from "prev commits"
+        if grep -E "^$line" ./.pig/"$branch"/prevCommits.txt >/dev/null; then
+            temp=$(mktemp)
+            sed -E "/^$line/d" ./.pig/"$branch"/prevCommits.txt > "$temp"
+            cat "$temp" > ./.pig/"$branch"/prevCommits.txt
+            rm "$temp"
+        fi
+
+    done < ./.pig/deletedIndex.txt
+    rm ./.pig/deletedIndex.txt
+    touch ./.pig/deletedIndex.txt
+
+fi &&
+
+
+################################################################################
+#                            COMMITTING FILE
+################################################################################
+
+# if a commit is made, update everything for the next commit, and for checkout
+
+if "$commitSuccess"; then
+
+    # writes commit message into the log before the increment
+
+    commitMsg=$(echo "$@" | sed 's/-a //' | sed 's/-m //' | sed 's/^ //')
+    echo "$commitNum" "$commitMsg" >> ./.pig/"$branch"/commitMsgLog.txt
+    echo Committed as commit "$commitNum"
+
+    #increment and update the commit num
+
+    commitNum=$(($commitNum + 1))
+    echo "$commitNum" > ./.pig/commitNum.txt
+
+    linkedUncommitedBranches=./.pig/"$branch"/uncommitedSharedBranches.txt
+    if test -f "$linkedUncommitedBranches"; then
+
+        # linkedUncommitedBranches stores a list of uncommited branches,
+        # when a branch is commited, restore that branches original files
+
+        while read uncommitedBranch; do
+
+            # this reverts an the index of a file when a shared branch is commited
+            # for example, master may branch out to b1, until either master or b1
+            # is commited, both branches share the same index and files.
+
+            echo "$uncommitedBranch" >> ./.pig/reverted
+            for file in ./.pig/"$uncommitedBranch"/revertBranch/*; do
+                if ! test "$file" = "./.pig/"$uncommitedBranch"/revertBranch/*" &&
+                     test -f ./.pig/"$uncommitedBranch"/index/$(basename "$file"); then
+
+                    cat "$file" > ./.pig/"$uncommitedBranch"/index/$(basename "$file")
+
+                fi
+            done
+        done < "$linkedUncommitedBranches"
+
+        # if a branch is commited, if you have other branches that are shared with
+        # you, delete yourself from their file, their file should also delete you
+        tempLink=$(mktemp)
+        cat "$linkedUncommitedBranches" > "$tempLink"
+        while read uncommitedBranch; do
+
+            theirUnlinkedBranches=./.pig/"$uncommitedBranch"/uncommitedSharedBranches.txt
+            cat "$theirUnlinkedBranches" | sed -E "s/"$branch"//" >"$theirUnlinkedBranches"
+            cat "$linkedUncommitedBranches" | sed -E "s/"$uncommitedBranch"//" >"$linkedUncommitedBranches"
+
+            # adding commited branched to a blacklists so they can edit files
+            # that got branched out
+
+            tempBlacklist=$(mktemp) &&
+            sed 's/commited?-no/commited?-yes/' ./.pig/"$branch"/blackListed/"$uncommitedBranch" > "$tempBlacklist" &&
+            cat "$tempBlacklist" > ./.pig/"$branch"/blackListed/"$uncommitedBranch" &&
+            sed 's/commited?-no/commited?-yes/' ./.pig/"$uncommitedBranch"/blackListed/"$branch" > "$tempBlacklist" &&
+            cat "$tempBlacklist" > ./.pig/"$uncommitedBranch"/blackListed/"$branch" &&
+            rm "$tempBlacklist"
+
+        done < "$tempLink"
+        rm "$tempLink"
+
+
+    fi
+
+
+
+else
+    echo nothing to commit
+    rm -r ./.pig/"$branch"/commits/"$commitNum"
+fi

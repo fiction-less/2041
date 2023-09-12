@@ -1,0 +1,219 @@
+#!/bin/dash
+# switching branch by changing the head
+
+
+srcbranch=$(cat ./.pig/HEAD.txt)
+destBranch="$1"
+unstagedFileErr=false
+
+
+#------------------- USAGE + ERROR CHECKING ----------
+
+
+if ! test -d .pig; then
+    echo pigs-add: error: pigs repository directory .pig not found
+    exit 1
+elif ! test "$#" = 1; then
+    echo "usage: pigs-checkout <branch>"
+    exit 1
+elif ! test -d "./.pig/$destBranch"; then
+    # check if branch exist, and move head if it does
+    # also record the last commit in the brach text
+    echo "pigs-checkout: error: unknown branch '$destBranch'"
+    exit 1
+elif test "$destBranch" = "$srcbranch"; then
+    # if branch is the one were currentlyu in
+    echo Already on "$destBranch"
+    exit 0
+fi
+
+
+# everytime we checkout out, take a snapshot of all FILES in curr dir and
+# our index when checking out which we will restore when checking back in
+
+pigs-status > ./.pig/"$srcbranch"/snapShot.txt
+
+for file in ./.pig/index/*; do
+    if ! test "$file" = "./.pig/index/*"; then
+        cat "$file" > ./.pig/"$srcbranch"/index/"$(basename "$file")"
+    fi
+done
+sourceBranchStatus=./.pig/"$srcbranch"/snapShot.txt
+destBranchStatus=./.pig/"$destBranch"/snapShot.txt
+
+# checks if at least one branch has committed since splitting
+isCommited=$(cat ./.pig/"$srcbranch"/blackListed/"$destBranch" |
+                    cut -d" " -f2 | cut -d"-" -f2)
+
+tempFile=$(mktemp)
+
+# if the desbrach is and uncommited shared branch, copy over your prevCommits
+# list.
+if grep -E "$destBranch" ./.pig/"$srcbranch"/uncommitedSharedBranches.txt >/dev/null &&
+    test "$(echo "$isCommited")" = "no"; then
+    cp ./.pig/"$srcbranch"/prevCommits.txt ./.pig/"$destBranch"/prevCommits.txt
+fi
+
+# if the curr branch file is changed ( added, commited, then file changed),
+# and dest branch DOES NOT have a copy of that file, then we through an error
+# if we attempt to checkout
+
+while read -r line; do
+    file=$(echo "$line" | cut -d"-" -f1 | sed -E "s/ $//")
+    status=$(echo "$line" | cut -d"-" -f2 | sed -E "s/^ //")
+
+    if  test "$status" = "file changed, changes not staged for commit" &&
+        ! grep -E "^$file" ./.pig/"$destBranch"/prevCommits.txt >/dev/null
+    then
+        unstagedFileErr=true
+        echo "$file" >> "$tempFile"
+    fi
+
+    # if its commited and if its a common branch, youre not allowed to make uncommited changes
+
+    if test -f ./.pig/"$srcbranch"/blackListed/"$destBranch"
+    then
+
+        # you will lose data if you make a unstagde file with the
+        # same name as another file in the dest branch (commited)
+        if  test "$isCommited" = "yes" &&
+            test -f ./.pig/"$srcbranch"/blackListed/"$destBranch" &&
+            ! test "$status" = "same as repo" &&
+            grep -E "^$file" ./.pig/"$destBranch"/commitLog.txt >/dev/null
+        then
+            unstagedFileErr=true
+            echo "$file" >> "$tempFile"
+        fi
+    fi
+done < "$sourceBranchStatus"
+
+if "$unstagedFileErr"; then
+    # you cant change branches if you change the file that has already been
+    # commited before and dont stage it
+    echo pigs-checkout: error: Your changes to the following files would be overwritten by checkout:
+    while read -r line; do
+        echo "$line"
+    done < "$tempFile" &&
+    rm "$tempFile"
+    exit 1
+else
+    # switch branches and change the head
+    echo "$destBranch" > ./.pig/HEAD.txt
+    echo "Switched to branch '$destBranch'"
+fi
+
+
+#---------------- RESTORING WORKER DIRECTORY + INDEX ---------------------
+
+isReverted=false
+
+if grep -E "^$destBranch" ./.pig/reverted >/dev/null; then
+    cat ./.pig/reverted | sed -E 's/^"$destBranch"//' >/dev/null
+    isReverted=true
+fi
+
+
+# delete files that dont exist in the dest branch only ifs its not a shared commit
+tempDeletedIndex=$(mktemp)
+
+
+if test $(echo "$isCommited") = "yes"; then
+diff ./.pig/"$destBranch"/index ./.pig/index |
+        grep -E "./.pig/index:" | rev | cut -d" " -f1 |
+        rev > "$tempDeletedIndex"
+fi
+while read -r redundantIdx; do
+    rm ./.pig/index/"$redundantIdx"
+done < "$tempDeletedIndex"
+rm "$tempDeletedIndex"
+
+# restore index, if reverted, also restore file. but only if were not still sharing
+if ! grep -E "$destBranch" ./.pig/"$srcbranch"/uncommitedSharedBranches.txt >/dev/null &&
+   test $(echo "$isCommited") = "yes"; then
+    for file in ./.pig/"$destBranch"/index/*; do
+        # when restoring the index, if the src is from shared branch
+        # and non have been commited, the index should not be changed
+        if ! test "$file" = "./.pig/$destBranch/index/*" &&
+        test "$isCommited" = "yes"; then
+            cat "$file" > ./.pig/index/"$(basename "$file")"
+        fi
+    done
+fi
+
+
+# !! note that there may be some untracked files in our status now
+#  from files in other branches, if that file from the src branch is not untracked,
+# then we have to delete it.
+
+if grep -E "$destBranch" ./.pig/reverted >/dev/null; then
+    cat ./.pig/"$destBranch"/revertedSnapshot > ./.pig/"$destBranch"/snapShot.txt
+ fi
+
+# delete all tracked files from the previous branches snaphot, leave
+# untracked ones alone.
+
+while read -r line; do
+    srcfile=$( echo "$line" | cut -d"-" -f1 | sed -E "s/ $//")
+    status=$(echo "$line" | cut -d"-" -f2 | sed -E "s/^ //")
+
+    if
+        ! test "$status" = "untracked" &&
+        ! test "$status" = "file changed, changes not staged for commit" &&
+        ! test "$status" = "file changed, changes staged for commit" &&
+        ! echo "$status" | grep -E "added to index" >/dev/null
+    then
+
+        # if were still sharing, as in, non are commited, dont delete the file.
+        if grep -E "^$destBranch" ./.pig/"$srcbranch"/uncommitedSharedBranches.txt >/dev/null; then
+            continue
+        fi
+        if test -f "$srcfile"; then
+            rm "$srcfile"; fi
+    fi
+
+done < "$sourceBranchStatus"
+
+
+# recopy back copy files in our working dir
+
+destBranchLastCommit=$( cat ./.pig/"$destBranch"/prevCommits.txt | rev |
+                            cut -d" " -f1| rev | sort -n | tail -1)
+lastCommitFolder=./.pig/"$destBranch"/commits/"$destBranchLastCommit"
+
+while read -r line; do
+
+    # we dont want to copy over untracked files that may have changed din
+    # other branches, or even tracked files that have been changed
+    file=$(echo "$line" | cut -d"-" -f1 | sed -E "s/ $//")
+    desStatus=$(echo "$line" | cut -d"-" -f2 | sed -E "s/^ //")
+
+    if
+        ! test "$desStatus" = "untracked" &&
+        ! echo "$desStatus" | grep -E "added to index" >/dev/null &&
+        ! test "$desStatus" = "file changed, changes not staged for commit" &&
+        ! test "$desStatus" = "file changed, changes staged for commit"
+    then
+
+        # if we are not still sharing, as in, neither branch as been
+        # commited yet at the point of splitting, then we shouldnt overwrite
+        # any files.
+        if grep -E "^$destBranch" ./.pig/"$srcbranch"/uncommitedSharedBranches.txt >/dev/null; then
+            continue
+        fi
+        cp "$lastCommitFolder/$file" "$(basename "$file")"
+    fi
+done < "$destBranchStatus"
+
+
+# remove first occurence of reverted from from reverted
+if "$isReverted"; then
+       temp=$(mktemp)
+        sed -E "/^$destBranch/d" ./.pig/reverted > "$temp" &&
+        cat "$temp" > ./.pig/reverted &&
+        rm "$temp"
+fi
+
+
+
+
+

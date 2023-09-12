@@ -1,0 +1,40 @@
+#!/bin/dash
+
+
+if test -d .pig
+then
+    # check if .pig already exists as a dir
+	echo "$0: error: .pig already exists"
+	exit 1
+fi
+
+# make .pig and any child dirs or files
+    # index: dir for staged files
+    # commits: dir for git-commited files
+    # commitNum: file for tracking commit num
+    # commitLog: file for tracking commit log
+    # prevCommits: file for tracking all added files + its respective commit nums
+            # -1 indicated it been staged but never commited
+            # files are deleted from here if they are removed from index + wrking dir
+    # deletedIndex.txt stored deleted staged files that are yet to be commited
+    # reverse branch: keeps a history of the index
+mkdir .pig &&
+echo master > ./.pig/HEAD.txt &&
+echo master > ./.pig/branches.txt &&
+echo 0 > ./.pig/commitNum.txt &&
+
+mkdir ./.pig/master &&
+mkdir ./.pig/index &&
+mkdir ./.pig/master/index &&
+mkdir ./.pig/master/commits &&
+mkdir ./.pig/master/revertBranch &&
+mkdir ./.pig/master/blackListed &&
+
+touch ./.pig/master/commitMsgLog.txt &&
+touch ./.pig/master/prevCommits.txt &&
+touch ./.pig/reverted &&
+touch ./.pig/deletedIndex.txt &&
+touch ./.pig/master/commitLog.txt &&
+echo Initialized empty pigs repository in .pig
+
+
